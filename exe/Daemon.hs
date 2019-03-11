@@ -7,7 +7,16 @@
 -- the RFC>.
 module Daemon (main) where
 
-import           Protolude hiding (catch, fromStrict, option, poll, tryJust)
+import           Protolude hiding
+                 ( async
+                 , catch
+                 , fromStrict
+                 , option
+                 , poll
+                 , tryJust
+                 , wait
+                 , waitEitherCatchCancel
+                 )
 
 import           Control.Exception.Safe hiding (Handler)
 import qualified Data.Map.Strict as Map
@@ -17,6 +26,7 @@ import           Network.Wai.Handler.Warp (run)
 import           Options.Applicative
 import           Servant
 import           System.IO (BufferMode(..), hSetBuffering)
+import           UnliftIO.Async
 
 import qualified Radicle.Daemon.HttpApi as Api
 import           Radicle.Daemon.Ipfs
@@ -188,7 +198,7 @@ init follows = traverse_ initMachine (Map.toList follows)
 -- /writer/.
 newMachine :: Daemon Api.NewResponse
 newMachine = do
-    id <- wrapException CouldNotCreateMachine (liftIO createMachine)
+    id <- wrapException CouldNotCreateMachine createMachine
     sub <- initDaemonSubscription id
     logInfo "Created new IPFS machine" [("machine-id", getMachineId id)]
     m <- emptyMachine id Writer sub
@@ -334,9 +344,8 @@ addInputs inputs index m = do
                  }
       pure (m', outputs)
 
--- | Run some IPFS IO related to a specific machine.
-machineIpfs :: MachineId -> IO a -> Daemon a
-machineIpfs id io = wrapException (MachineError id . IpfsError) (liftIO io)
+machineIpfs :: (MonadCatch m) => MachineId -> m a -> m a
+machineIpfs id io = wrapException (MachineError id . IpfsError) io
 
 -- | Do some high-freq polling for a while.
 bumpPolling :: MachineId -> Daemon ()
@@ -456,8 +465,8 @@ writeInputs id inputs nonce = do
 -- * Polling
 
 -- | Fetch and apply new inputs for all machines in reader mode.
-poll :: Daemon ()
-poll = traverseMachines pollMachine
+pollMachines :: Daemon ()
+pollMachines = traverseMachines pollMachine
   where
     pollMachine :: MachineId -> CachedMachine -> Daemon ()
     pollMachine id = \case
@@ -500,7 +509,7 @@ timeSince x = timeDelta x <$> Time.getSystemTime
 initPolling :: Env -> IO Void
 initPolling env = do
   threadDelay (millisToMicros highFreqPollPeriod)
-  res <- runDaemon env poll
+  res <- runDaemon env pollMachines
   -- If polling encounters an error it should log it but continue.
   -- Later we might detect some errors as critical and halt the
   -- daemon.
