@@ -165,6 +165,7 @@ executables:
     - text
     - warp
     - time
+    - unliftio
     ghc-options: -main-is Daemon
 
   radicle-doc:
